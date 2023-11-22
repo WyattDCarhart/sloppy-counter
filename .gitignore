@@ -1,0 +1,8 @@
+# all log files
+*.log
+
+# sloppySim
+sloppySim
+
+# a.out
+a.out
