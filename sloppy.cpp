@@ -1,6 +1,8 @@
+#include<stdlib.h>
 #include<iostream>
 #include<pthread.h>
 #include<semaphore.h>
+#include<time.h>
 #include<unistd.h>
 #include<vector>
 
@@ -28,10 +30,38 @@ typedef struct __thread_info {
 } thread_info;
 
 void * counter_thread(void * arg) {
+  thread_info * info = (thread_info*) arg;
+  int ms_delay;
+  for (int i = 0; i < info -> sh -> work_iterations; i++) {
+    // "work"
+    float random = (rand() / (float)RAND_MAX) + 0.5; // number in range [0.5, 1.5]
+    ms_delay = (info -> sh -> work_time) * random;
+    if (info -> sh -> cpubound) {
+      for (int j = 0; j < ms_delay * 1000000; j++) {}
+    }
+    else {
+      usleep(ms_delay * 1000);
+    }
 
+    // increment local counter. If we reach the threshold, dump bucket into global
+    ++(info -> sh -> local_counts[info -> thread_index]);
+    if ((info -> sh -> local_counts[info -> thread_index]) >= info -> sh -> sloppiness) {
+      sem_wait(&(info -> sh -> mutex));
+      (info -> sh -> global_count) += (info -> sh -> local_counts[info -> thread_index]);
+      sem_post(&(info -> sh -> mutex));
+      info -> sh -> local_counts[info -> thread_index] = 0;
+    }
+  }
+
+  delete info;
+
+  bool* ok = new bool;
+  *ok = true;
+  return ok;
 }
 
 int main(int argc, char * argv[]) {
+  srand(time(NULL));
   string usage = "\nUsage: sloppySim <N_Threads = 2> <Sloppiness = 10> <work_time = 10> <work iterations = 100> <CPU_BOUND = false> <Do_Logging = false>";
 
   // convert argv to string[]
@@ -116,25 +146,23 @@ int main(int argc, char * argv[]) {
   sh.global_count = 0;
 
   // print settings for this run
-  if (do_logging) {
-    cout << "#threads:\t" << num_threads
-         << "\nsloppiness:\t" << sloppiness
-         << "\nwork time:\t" << work_iterations
-         << "\nCPU bound:\t" << cpubound << endl;
-  }
+  cout << "#threads:\t\t" << num_threads
+       << "\nsloppiness:\t\t" << sloppiness
+       << "\nwork iterations:\t" << work_iterations
+       << "\nCPU bound:\t\t" << cpubound << endl;
 
   // create threads
   pthread_t threads[num_threads];
   for (int i = 0; i < num_threads; i++) {
-    thread_info ti;
-    ti.sh = &sh;
-    ti.thread_index = i;
-    pthread_create(&threads[i], NULL, counter_thread, &ti);
+    thread_info * ti = new thread_info;
+    ti->sh = &sh;
+    ti->thread_index = i;
+    pthread_create(&threads[i], NULL, counter_thread, ti);
   }
 
   // log the global and local counts periodically
   if (do_logging) {
-    float ms_delay = ms_work_time * work_iterations / 10;
+    int ms_delay = ms_work_time * work_iterations / 10;
     cout << "Logging every " << ms_delay << " ms" << endl;
 
     int total_count;
@@ -158,5 +186,13 @@ int main(int argc, char * argv[]) {
     cout << "Final Global Count: " << sh.global_count << endl;
   }
   
+  // take care of loose ends
+  delete[] sh.local_counts;
+  bool * ret;
+    for (int i = 0; i < num_threads; i++) {
+      pthread_join(threads[i],(void**) &ret);
+      delete ret;
+    }
+
   return 0;
 }
